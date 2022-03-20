@@ -1,0 +1,37 @@
+server:
+  port: 8888
+spring:
+  application:
+    name: gateway
+  ## 配置zookeeper地址
+  cloud:
+    zookeeper:
+      discovery:
+        register: false #网关本身不注册到zk
+        #root: services #zk注册中心默认服务路径
+        connect-string: localhost:2181
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lowerCaseServiceId: true
+      routes:
+      - id: service-mypro
+        uri: lb://service-mypro
+        predicates:
+          - Path=/demo/**
+        filters:
+          - StripPrefix=1
+
+logging:
+  level:
+    org:
+      springframework:
+        cloud:
+          gateway: TRACE
+          
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
