@@ -3,7 +3,6 @@ package com.example.demogateway.loadbalance;
 
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -24,6 +23,9 @@ import org.springframework.cloud.loadbalancer.core.ReactorServiceInstanceLoadBal
 import org.springframework.cloud.loadbalancer.core.SelectedInstanceCallback;
 import org.springframework.cloud.loadbalancer.core.ServiceInstanceListSupplier;
 
+import com.google.common.base.Optional;
+
+import io.micrometer.core.instrument.util.StringUtils;
 import reactor.core.publisher.Mono;
 
 /**
@@ -59,51 +61,66 @@ public class MyLoadBalancer implements ReactorServiceInstanceLoadBalancer {
 		RequestDataContext ctx = (RequestDataContext)request.getContext();
 		RequestData requestData = ctx.getClientRequest();
 		URI uri = requestData.getUrl();
-		//TODO 域名可以看成不同环境
-		log.info("----------------------------------host="+ uri.getHost());
+		//通过域名区分不同环境
+		String host = uri.getHost();
+		log.info("----------------------------------host="+ host);
 		
 		ServiceInstanceListSupplier supplier = serviceInstanceListSupplierProvider.getIfAvailable(NoopServiceInstanceListSupplier::new);
 		Mono<List<ServiceInstance>> serviceList = supplier.get(request).next();
-		return serviceList.map(serviceInstances -> processInstanceResponse(supplier, serviceInstances));
+		Mono<Response<ServiceInstance>> result = serviceList.map(serviceInstances -> {
+			Response<ServiceInstance> serviceInstanceResponse = getInstanceResponse(serviceInstances, host);
+			if (supplier instanceof SelectedInstanceCallback && serviceInstanceResponse.hasServer()) {
+				((SelectedInstanceCallback) supplier).selectedServiceInstance(serviceInstanceResponse.getServer());
+			}
+			return serviceInstanceResponse;
+		});
+		return result;
 	}
 
-	private Response<ServiceInstance> processInstanceResponse(ServiceInstanceListSupplier supplier,
-			List<ServiceInstance> serviceInstances) {
-		Response<ServiceInstance> serviceInstanceResponse = getInstanceResponse(serviceInstances);
-		if (supplier instanceof SelectedInstanceCallback && serviceInstanceResponse.hasServer()) {
-			((SelectedInstanceCallback) supplier).selectedServiceInstance(serviceInstanceResponse.getServer());
-		}
-		return serviceInstanceResponse;
-	}
-
-	private Response<ServiceInstance> getInstanceResponse(List<ServiceInstance> instances) {
+	/**
+	 * 通过自定义设置 metadata 标签路由，优先选择完全匹配到环境标签的服务，不然降级到基准稳定环境
+	 * @param instances
+	 * @param metaMatchTag
+	 * @return
+	 */
+	private Response<ServiceInstance> getInstanceResponse(List<ServiceInstance> instances, String metaMatchTag) {
 		if (instances.isEmpty()) {
 			if (log.isWarnEnabled()) {
 				log.warn("No servers available for service: " + serviceId);
 			}
 			return new EmptyResponse();
 		}
-		//TODO: 可以通过自定义 metadata标签路由
-		Map<String, List<ServiceInstance>> goupServer = new HashMap<>();
+		//默认稳定的基准服务
+		List<ServiceInstance> defaultServerList = new ArrayList<>();
+		//精确匹配环境tag的服务
+		List<ServiceInstance> tagServerList = new ArrayList<>();
 		for(ServiceInstance instance : instances) {
 			Map<String, String> metaData = instance.getMetadata();
-			log.info("instance=============" + instance.getHost() + " ================ " + metaData);
-			String env = metaData.get("env");
-			if(env != null && !"".equals(env.trim())) {
-				List<ServiceInstance> serverList = goupServer.get(env.trim());
-				if(serverList == null) {
-					serverList = new ArrayList<>();
-				}
-				serverList.add(instance);
-				goupServer.put(env.trim(), instances);
+			log.info("instance=============" + instance.getHost() + ":" + instance.getPort() + " ================ " + metaData);
+			String env = Optional.fromNullable(metaData.get("env")).or("");
+			if(StringUtils.isBlank(env)) {
+				defaultServerList.add(instance);
+				continue;
 			}
-			
+			if(StringUtils.isNotBlank(metaMatchTag) && env.trim().equals(metaMatchTag.trim())) {
+				tagServerList.add(instance);
+				continue;
+			}
 		}
-
+		
 		int pos = Math.abs(this.position.incrementAndGet());
-
+		//优先选择完全匹配到环境标签的服务
+		if(tagServerList.size() > 0) {
+			ServiceInstance instance = instances.get(pos % tagServerList.size());
+			return new DefaultResponse(instance);
+		}
+		//路由降级到稳定的基准环境
+		if(defaultServerList.size() > 0) {
+			ServiceInstance instance = instances.get(pos % defaultServerList.size());
+			return new DefaultResponse(instance);
+		}
+		//基准环境也没有，随便选择一个存在的服务吧
 		ServiceInstance instance = instances.get(pos % instances.size());
-
 		return new DefaultResponse(instance);
 	}
 

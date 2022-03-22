@@ -1,5 +1,7 @@
 package com.example.demogateway.loadbalance;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.loadbalancer.annotation.LoadBalancerClient;
@@ -16,12 +18,15 @@ import org.springframework.core.env.Environment;
  */
 @LoadBalancerClient(name="service-mypro", configuration = CustomLoadBalancerConfiguration.class )
 public class CustomLoadBalancerConfiguration {
+	
+	static final Log log = LogFactory.getLog(CustomLoadBalancerConfiguration.class);
+	
 	@Bean
-	public ReactorLoadBalancer<ServiceInstance> reactorServiceInstanceLoadBalancer(Environment environment,
+	public ReactorLoadBalancer<ServiceInstance> myproReactorServiceInstanceLoadBalancer(Environment environment,
 			LoadBalancerClientFactory loadBalancerClientFactory) {
 		String name = environment.getProperty(LoadBalancerClientFactory.PROPERTY_NAME);
-//		name = "service-mypro";
-		ObjectProvider<ServiceInstanceListSupplier> provider = loadBalancerClientFactory.getLazyProvider(name, ServiceInstanceListSupplier.class);
+		ObjectProvider<ServiceInstanceListSupplier> provider = loadBalancerClientFactory.getLazyProvider(name,
+				ServiceInstanceListSupplier.class);
 		return new MyLoadBalancer(provider, name);
 	}
 }
